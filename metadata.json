@@ -1,0 +1,5 @@
+{
+  "name": "Visualizador de Planilhas",
+  "description": "Uma aplicação web minimalista para carregar, visualizar, filtrar e ordenar dados de planilhas XLSM. A interface é projetada para ser limpa e focada nos dados, oferecendo uma experiência de usuário semelhante ao Excel.",
+  "requestFramePermissions": []
+}

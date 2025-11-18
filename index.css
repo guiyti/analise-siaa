@@ -1,0 +1,40 @@
+/* Otimizações de performance */
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+/* Otimizar rendering de tabelas */
+table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  will-change: scroll-position;
+}
+
+/* Acelerar scroll com GPU */
+.overflow-auto {
+  will-change: scroll-position;
+  transform: translateZ(0);
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Otimizar inputs de filtro */
+input[type="text"] {
+  will-change: contents;
+}
+
+/* Reduzir repaints em hover */
+tr:hover {
+  contain: layout style paint;
+}
+
+/* Otimizar animações */
+button,
+.transition {
+  will-change: auto;
+}
