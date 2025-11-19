@@ -36,11 +36,9 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                     <div className="flex items-center justify-between">
                       <div>
                         <h3 className="text-base font-semibold text-gray-800">
-                          {sheet.type}
+                          {sheet.name}
                         </h3>
                         <div className="mt-1 flex items-center space-x-3 text-sm text-gray-600">
-                          <span>Período: {sheet.period.year}/{sheet.period.semester}</span>
-                          <span>•</span>
                           <span>Atualizado: {new Date(sheet.updatedAt).toLocaleDateString('pt-BR')}</span>
                         </div>
                       </div>

@@ -13,17 +13,9 @@ export interface SheetData {
   rows: Row[];
 }
 
-export type SheetType = 'Ofertas' | 'Alunos' | string;
-
-export interface SheetPeriod {
-  year: number;
-  semester: 1 | 2;
-}
-
 export interface SheetMetadata {
-  type: SheetType;
-  period: SheetPeriod;
-  key: string; // tipo_ano_semestre
+  key: string; // Identificador único da planilha
+  name: string; // Nome de exibição da planilha
   createdAt: string;
   updatedAt: string;
 }

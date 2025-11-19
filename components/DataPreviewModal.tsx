@@ -1,13 +1,14 @@
 import React, { useState, useMemo } from 'react';
-import type { SheetData, Row, SheetMetadata, SheetPeriod } from '../types';
+import type { SheetData, Row } from '../types';
 
 interface DataPreviewModalProps {
   data: SheetData;
-  onConfirm: (modifiedData: SheetData, sheetType?: string, sheetPeriod?: SheetPeriod) => void;
+  onConfirm: (modifiedData: SheetData, sheetIdentifier?: string) => void;
   onCancel: () => void;
   existingHeaders?: string[]; // Headers da planilha existente (se estiver mesclando)
-  isNewSheet?: boolean; // Se true, mostra campos de tipo e período
-  existingSheets?: SheetMetadata[]; // Para validar duplicatas
+  isNewSheet?: boolean; // Se true, mostra campo de identificador
+  existingIdentifiers?: string[]; // Para validar duplicatas
+  fileName?: string; // Nome do arquivo carregado
 }
 
 interface CustomColumn {
@@ -15,26 +16,27 @@ interface CustomColumn {
   value: string;
 }
 
-const PREDEFINED_TYPES = ['Ofertas', 'Alunos'];
-const CURRENT_YEAR = new Date().getFullYear();
-
 export const DataPreviewModal: React.FC<DataPreviewModalProps> = ({
   data,
   onConfirm,
   onCancel,
   existingHeaders,
   isNewSheet = false,
-  existingSheets = [],
+  existingIdentifiers = [],
+  fileName = '',
 }) => {
   const [customColumns, setCustomColumns] = useState<CustomColumn[]>([]);
+  
+  // Estado para valores de colunas faltantes (usado quando está mesclando)
+  const [missingColumnValues, setMissingColumnValues] = useState<Record<string, string>>({});
+  
+  // Estados para edição inline na tabela
   const [newColumnName, setNewColumnName] = useState('');
   const [newColumnValue, setNewColumnValue] = useState('');
-  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [isAddingColumn, setIsAddingColumn] = useState(false);
   
-  // Estados para nova planilha
-  const [selectedType, setSelectedType] = useState<string>('Ofertas');
-  const [customType, setCustomType] = useState<string>('');
-  const [selectedPeriod, setSelectedPeriod] = useState<string>(`${CURRENT_YEAR}/1`);
+  // Estado para identificador da planilha
+  const [sheetIdentifier, setSheetIdentifier] = useState<string>('');
 
   // Determinar status das colunas
   const columnStatus = useMemo(() => {
@@ -64,7 +66,18 @@ export const DataPreviewModal: React.FC<DataPreviewModalProps> = ({
     return status;
   }, [data.headers, existingHeaders]);
 
-  // Combinar headers: primeiro os do arquivo, depois os faltantes, depois os customizados
+  // Identificar colunas faltantes
+  const missingColumns = useMemo(() => {
+    if (!existingHeaders || existingHeaders.length === 0) {
+      return [];
+    }
+    return existingHeaders.filter(header => !data.headers.includes(header));
+  }, [data.headers, existingHeaders]);
+
+  // Verificar se está mesclando (tem headers existentes e não é nova planilha)
+  const isMerging = existingHeaders && existingHeaders.length > 0 && !isNewSheet;
+
+  // Combinar headers: primeiro os do arquivo, depois os faltantes, depois os customizados, e por último a coluna de adicionar
   const allHeaders = useMemo(() => {
     const combined = [...data.headers];
     
@@ -91,7 +104,7 @@ export const DataPreviewModal: React.FC<DataPreviewModalProps> = ({
     const newHeaders = [...allHeaders];
     const newRows = data.rows.map(row => ({ ...row }));
 
-    // Adicionar colunas customizadas
+    // Adicionar colunas customizadas (sempre, não apenas quando não está mesclando)
     customColumns.forEach(col => {
       newRows.forEach(row => {
         row[col.name] = col.value;
@@ -105,15 +118,29 @@ export const DataPreviewModal: React.FC<DataPreviewModalProps> = ({
       }
     });
 
-    return { headers: newHeaders, rows: newRows };
-  }, [data.rows, allHeaders, customColumns, columnStatus]);
+    // Adicionar valores das colunas faltantes (quando está mesclando)
+    if (isMerging) {
+      missingColumns.forEach(colName => {
+        const value = missingColumnValues[colName] || '';
+        newRows.forEach(row => {
+          row[colName] = value;
+        });
+      });
+    }
 
-  const handleAddColumn = () => {
+    return { headers: newHeaders, rows: newRows };
+  }, [data.rows, allHeaders, customColumns, columnStatus, isMerging, missingColumns, missingColumnValues]);
+
+  // Salvar coluna atual (se tiver nome válido)
+  const handleSaveCurrentColumn = () => {
     const trimmedName = newColumnName.trim();
     const trimmedValue = newColumnValue.trim();
 
     if (!trimmedName) {
-      alert('Por favor, forneça um nome para a coluna.');
+      // Se não tem nome, apenas limpar
+      setNewColumnName('');
+      setNewColumnValue('');
+      setIsAddingColumn(false);
       return;
     }
 
@@ -127,84 +154,72 @@ export const DataPreviewModal: React.FC<DataPreviewModalProps> = ({
       return;
     }
 
-    setCustomColumns([...customColumns, { name: trimmedName, value: trimmedValue }]);
+    const newCustomColumns = [...customColumns, { name: trimmedName, value: trimmedValue }];
+    
+    setCustomColumns(newCustomColumns);
     setNewColumnName('');
     setNewColumnValue('');
+    setIsAddingColumn(false);
   };
 
-  const handleEditColumn = (index: number) => {
-    const col = customColumns[index];
-    setNewColumnName(col.name);
-    setNewColumnValue(col.value);
-    setEditingIndex(index);
+  // Lidar com perda de foco nos campos
+  const handleBlur = () => {
+    // Usar timeout para permitir cliques em outros elementos do modal
+    setTimeout(() => {
+      const trimmedName = newColumnName.trim();
+      
+      if (!trimmedName && isAddingColumn) {
+        // Se não tem nome, remover campo de edição
+        setNewColumnName('');
+        setNewColumnValue('');
+        setIsAddingColumn(false);
+      }
+    }, 200);
   };
 
-  const handleUpdateColumn = () => {
-    if (editingIndex === null) return;
-
-    const trimmedName = newColumnName.trim();
-    const trimmedValue = newColumnValue.trim();
-
-    if (!trimmedName) {
-      alert('Por favor, forneça um nome para a coluna.');
-      return;
-    }
-
-    const updatedColumns = [...customColumns];
-    updatedColumns[editingIndex] = { name: trimmedName, value: trimmedValue };
-    setCustomColumns(updatedColumns);
-    setNewColumnName('');
-    setNewColumnValue('');
-    setEditingIndex(null);
-  };
-
-  const handleCancelEdit = () => {
-    setNewColumnName('');
-    setNewColumnValue('');
-    setEditingIndex(null);
-  };
-
-  const handleRemoveColumn = (index: number) => {
-    setCustomColumns(customColumns.filter((_, i) => i !== index));
-  };
-
-  const generateSheetKey = (type: string, period: SheetPeriod): string => {
-    return `${type}_${period.year}_${period.semester}`;
+  const handleRemoveColumn = (columnName: string) => {
+    setCustomColumns(customColumns.filter(col => col.name !== columnName));
   };
 
   const handleConfirm = () => {
-    // Se é nova planilha, validar tipo e período
+    // Se estiver adicionando uma coluna, incluir ela nos dados antes de confirmar
+    let finalData = previewData;
+    if (isAddingColumn && newColumnName.trim()) {
+      const columnName = newColumnName.trim();
+      const columnValue = newColumnValue.trim();
+      
+      finalData = {
+        headers: [...previewData.headers, columnName],
+        rows: previewData.rows.map(row => ({
+          ...row,
+          [columnName]: columnValue
+        }))
+      };
+    }
+    
+    // Se é nova planilha, validar identificador
     if (isNewSheet) {
-      const finalType = selectedType === 'Outro' ? customType : selectedType;
-      if (!finalType.trim()) {
-        alert('Por favor, forneça um nome para o tipo de planilha.');
+      const trimmedIdentifier = sheetIdentifier.trim();
+      if (!trimmedIdentifier) {
+        alert('Por favor, forneça um identificador para a planilha.');
         return;
       }
       
-      // Parse do período selecionado (formato: "YYYY/S")
-      const [yearStr, semesterStr] = selectedPeriod.split('/');
-      const year = parseInt(yearStr);
-      const semester = parseInt(semesterStr) as 1 | 2;
-      const period: SheetPeriod = { year, semester };
-      
       // Verificar se já existe
-      const key = generateSheetKey(finalType, period);
-      const existingSheet = existingSheets.find(s => s.key === key);
-      
-      if (existingSheet) {
+      if (existingIdentifiers.includes(trimmedIdentifier)) {
         alert(
-          `Já existe uma planilha "${existingSheet.type}" para ${existingSheet.period.year}/${existingSheet.period.semester}.\n\n` +
+          `Já existe uma planilha com o identificador "${trimmedIdentifier}".\n\n` +
           `Para modificar os dados dessa planilha:\n` +
-          `1. Acesse a planilha "${existingSheet.type}" no menu principal\n` +
+          `1. Acesse a planilha "${trimmedIdentifier}" no menu principal\n` +
           `2. Use "Opções > Atualizar Esta Planilha" para adicionar/atualizar registros\n` +
-          `3. Ou use "Opções > Limpar Esta Planilha" para remover todos os dados`
+          `3. Ou use "Opções > Excluir Esta Planilha" para remover todos os dados`
         );
         return;
       }
       
-      onConfirm(previewData, finalType, period);
+      onConfirm(finalData, trimmedIdentifier);
     } else {
-      onConfirm(previewData);
+      onConfirm(finalData);
     }
   };
 
@@ -216,6 +231,11 @@ export const DataPreviewModal: React.FC<DataPreviewModalProps> = ({
       <div className="bg-white rounded-lg shadow-xl w-full max-w-6xl max-h-[90vh] flex flex-col">
         <header className="p-6 border-b">
           <h2 className="text-2xl font-bold text-gray-800">Pré-visualização dos Dados</h2>
+          {fileName && (
+            <p className="text-sm font-semibold text-indigo-600 mt-1">
+              Arquivo: {fileName}
+            </p>
+          )}
           <p className="text-sm text-gray-600 mt-1">
             Visualize os dados e adicione colunas personalizadas antes de carregar
           </p>
@@ -242,33 +262,81 @@ export const DataPreviewModal: React.FC<DataPreviewModalProps> = ({
                           key={header}
                           className="px-4 py-2 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider border-r border-gray-200 last:border-r-0"
                         >
-                          <div className="flex items-center space-x-1">
-                            {status === 'present' && !isCustom && (
-                              <svg className="w-4 h-4 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                              </svg>
-                            )}
-                            {status === 'missing' && (
-                              <svg className="w-4 h-4 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                              </svg>
-                            )}
+                          <div className="flex items-center justify-between space-x-1">
+                            <div className="flex items-center space-x-1">
+                              {status === 'present' && !isCustom && (
+                                <svg className="w-4 h-4 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                </svg>
+                              )}
+                              {status === 'missing' && (
+                                <svg className="w-4 h-4 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                              )}
+                              {isCustom && (
+                                <svg className="w-4 h-4 text-indigo-600" fill="currentColor" viewBox="0 0 24 24">
+                                  <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+                                </svg>
+                              )}
+                              <span className={
+                                status === 'missing' ? 'text-red-600' :
+                                isCustom ? 'text-indigo-600' :
+                                'text-gray-700'
+                              }>
+                                {header}
+                              </span>
+                            </div>
                             {isCustom && (
-                              <svg className="w-4 h-4 text-indigo-600" fill="currentColor" viewBox="0 0 24 24">
-                                <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
-                              </svg>
+                              <button
+                                onClick={() => handleRemoveColumn(header)}
+                                className="ml-2 text-red-500 hover:text-red-700"
+                                title="Remover coluna"
+                              >
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                              </button>
                             )}
-                            <span className={
-                              status === 'missing' ? 'text-red-600' :
-                              isCustom ? 'text-indigo-600' :
-                              'text-gray-700'
-                            }>
-                              {header}
-                            </span>
                           </div>
                         </th>
                       );
                     })}
+                    {/* Coluna em edição (se estiver adicionando) */}
+                    {!isMerging && isAddingColumn && (
+                      <th className="px-4 py-2 text-left text-xs font-semibold text-gray-700 border-r border-gray-200 bg-yellow-50" style={{ minWidth: '150px' }}>
+                        <input
+                          type="text"
+                          value={newColumnName}
+                          onChange={(e) => setNewColumnName(e.target.value)}
+                          onBlur={handleBlur}
+                          placeholder="Nome da coluna"
+                          className="w-full px-2 py-1 text-xs border border-yellow-400 rounded focus:outline-none focus:ring-1 focus:ring-yellow-500"
+                          autoFocus
+                        />
+                      </th>
+                    )}
+                    
+                    {/* Coluna '+' para adicionar nova coluna */}
+                    {!isMerging && (
+                      <th className="px-4 py-2 text-left text-xs font-semibold text-gray-700 border-r border-gray-200 bg-indigo-50">
+                        <button
+                          onClick={() => {
+                            // Salvar a coluna atual antes de abrir nova
+                            if (isAddingColumn && newColumnName.trim()) {
+                              handleSaveCurrentColumn();
+                            }
+                            setIsAddingColumn(true);
+                          }}
+                          className="flex items-center justify-center w-full text-indigo-600 hover:text-indigo-800"
+                          title="Adicionar nova coluna"
+                        >
+                          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                          </svg>
+                        </button>
+                      </th>
+                    )}
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
@@ -276,21 +344,69 @@ export const DataPreviewModal: React.FC<DataPreviewModalProps> = ({
                     <tr key={rowIndex} className="hover:bg-gray-50">
                       {allHeaders.map((header) => {
                         const status = columnStatus[header] || 'none';
+                        const isCustom = customColumns.some(col => col.name === header);
+                        const isMissing = status === 'missing';
                         
                         return (
                           <td
                             key={`${rowIndex}-${header}`}
                             className={`px-4 py-2 text-sm border-r border-gray-200 last:border-r-0 whitespace-nowrap ${
-                              status === 'missing' ? 'bg-red-50 text-red-400 italic' : 'text-gray-800'
-                            }`}
+                              isMissing ? 'bg-red-50' : ''
+                            } ${isCustom ? 'bg-indigo-50' : ''}`}
                           >
-                            {status === 'missing' ? '(faltando)' :
-                             row[header] !== null && row[header] !== undefined
-                              ? String(row[header])
-                              : '-'}
+                            {isMissing && rowIndex === 0 ? (
+                              // Campo editável para coluna faltante (apenas primeira linha)
+                              <input
+                                type="text"
+                                value={missingColumnValues[header] || ''}
+                                onChange={(e) => setMissingColumnValues({
+                                  ...missingColumnValues,
+                                  [header]: e.target.value
+                                })}
+                                placeholder="Digite o valor..."
+                                className="w-full px-2 py-1 text-sm border border-red-300 rounded focus:outline-none focus:ring-1 focus:ring-red-500 bg-white"
+                              />
+                            ) : isMissing ? (
+                              // Mostrar valor replicado nas outras linhas
+                              <span className="text-red-600 italic">
+                                {missingColumnValues[header] || '(faltando)'}
+                              </span>
+                            ) : (
+                              // Valor normal da célula
+                              <span className={isCustom ? 'text-indigo-700 font-medium' : 'text-gray-800'}>
+                                {row[header] !== null && row[header] !== undefined
+                                  ? String(row[header])
+                                  : '-'}
+                              </span>
+                            )}
                           </td>
                         );
                       })}
+                      {/* Célula da coluna em edição */}
+                      {!isMerging && isAddingColumn && (
+                        <td className="px-4 py-2 text-sm border-r border-gray-200 bg-yellow-50" style={{ minWidth: '150px' }}>
+                          {rowIndex === 0 ? (
+                            <input
+                              type="text"
+                              value={newColumnValue}
+                              onChange={(e) => setNewColumnValue(e.target.value)}
+                              onBlur={handleBlur}
+                              disabled={!newColumnName.trim()}
+                              placeholder={newColumnName.trim() ? "Valor padrão..." : "Digite o nome primeiro"}
+                              className="w-full px-2 py-1 text-sm border border-yellow-400 rounded focus:outline-none focus:ring-1 focus:ring-yellow-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                            />
+                          ) : (
+                            <span className="text-yellow-700 text-xs italic">{newColumnValue || '-'}</span>
+                          )}
+                        </td>
+                      )}
+                      
+                      {/* Célula da coluna '+' */}
+                      {!isMerging && (
+                        <td className="px-4 py-2 text-sm border-r border-gray-200 bg-indigo-50">
+                          {/* Vazia, apenas para alinhamento */}
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
@@ -298,7 +414,7 @@ export const DataPreviewModal: React.FC<DataPreviewModalProps> = ({
             </div>
             
             {/* Legenda */}
-            <div className="bg-gray-50 px-4 py-3 border-t border-gray-200 flex items-center space-x-6 text-xs">
+            <div className="bg-gray-50 px-4 py-3 border-t border-gray-200 flex flex-wrap items-center gap-4 text-xs">
               <div className="flex items-center space-x-1">
                 <svg className="w-4 h-4 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
@@ -309,7 +425,7 @@ export const DataPreviewModal: React.FC<DataPreviewModalProps> = ({
                 <svg className="w-4 h-4 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                 </svg>
-                <span className="text-gray-600">Coluna faltando (será preenchida com vazio ou valor customizado)</span>
+                <span className="text-gray-600">Coluna faltante (edite na primeira linha para preencher)</span>
               </div>
               <div className="flex items-center space-x-1">
                 <svg className="w-4 h-4 text-indigo-600" fill="currentColor" viewBox="0 0 24 24">
@@ -317,191 +433,48 @@ export const DataPreviewModal: React.FC<DataPreviewModalProps> = ({
                 </svg>
                 <span className="text-gray-600">Coluna personalizada adicionada</span>
               </div>
-            </div>
-          </div>
-
-          {/* Seção de adicionar colunas - AGORA ABAIXO DA PREVIEW */}
-          <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-            <h3 className="text-lg font-semibold text-gray-700 mb-3">Adicionar Coluna Personalizada</h3>
-            
-            <div className="flex gap-3 items-end">
-              <div className="flex-1">
-                <label className="block text-sm font-medium text-gray-700 mb-1">Nome da Coluna</label>
-                <input
-                  type="text"
-                  value={newColumnName}
-                  onChange={(e) => setNewColumnName(e.target.value)}
-                  placeholder="Ex: Campus, Modalidade..."
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
-              </div>
-              <div className="flex-1">
-                <label className="block text-sm font-medium text-gray-700 mb-1">Valor</label>
-                <input
-                  type="text"
-                  value={newColumnValue}
-                  onChange={(e) => setNewColumnValue(e.target.value)}
-                  placeholder="Ex: São Paulo, EAD..."
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
-              </div>
-              <div>
-                {editingIndex !== null ? (
-                  <div className="flex gap-2">
-                    <button
-                      onClick={handleUpdateColumn}
-                      className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition whitespace-nowrap"
-                    >
-                      Atualizar
-                    </button>
-                    <button
-                      onClick={handleCancelEdit}
-                      className="px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400 transition"
-                    >
-                      Cancelar
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    onClick={handleAddColumn}
-                    className="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition whitespace-nowrap"
-                  >
-                    + Adicionar Coluna
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Lista de colunas personalizadas */}
-            {customColumns.length > 0 && (
-              <div className="mt-4">
-                <h4 className="text-sm font-semibold text-gray-700 mb-2">Colunas Adicionadas:</h4>
-                <div className="space-y-2">
-                  {customColumns.map((col, index) => (
-                    <div
-                      key={index}
-                      className="flex items-center justify-between bg-white border border-gray-200 rounded-md p-3"
-                    >
-                      <div className="flex-grow">
-                        <span className="font-semibold text-gray-800">{col.name}:</span>
-                        <span className="text-gray-600 ml-2">{col.value || '(vazio)'}</span>
-                      </div>
-                      <div className="flex space-x-2">
-                        <button
-                          onClick={() => handleEditColumn(index)}
-                          className="px-3 py-1 text-sm bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition"
-                        >
-                          Editar
-                        </button>
-                        <button
-                          onClick={() => handleRemoveColumn(index)}
-                          className="px-3 py-1 text-sm bg-red-100 text-red-700 rounded hover:bg-red-200 transition"
-                        >
-                          Remover
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Seção de Tipo e Período - APENAS para novas planilhas */}
-          {isNewSheet && (
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-              <h3 className="text-lg font-semibold text-gray-700 mb-3">Informações da Nova Planilha</h3>
-              
-              <div className="flex gap-3 items-end">
-                <div className="flex-1">
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Tipo de Planilha</label>
-                  <select
-                    value={selectedType}
-                    onChange={(e) => setSelectedType(e.target.value)}
-                    className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  >
-                    {PREDEFINED_TYPES.map(type => (
-                      <option key={type} value={type}>{type}</option>
-                    ))}
-                    <option value="Outro">Outro (personalizado)</option>
-                  </select>
-                </div>
-                
-                <div className="flex-1">
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Período</label>
-                  <select
-                    value={selectedPeriod}
-                    onChange={(e) => setSelectedPeriod(e.target.value)}
-                    className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  >
-                    {(() => {
-                      const now = new Date();
-                      const currentYear = now.getFullYear();
-                      const currentMonth = now.getMonth() + 1;
-                      const currentSemester = currentMonth <= 6 ? 1 : 2;
-                      
-                      // Próximo semestre
-                      let nextYear = currentYear;
-                      let nextSemester = currentSemester === 1 ? 2 : 1;
-                      if (nextSemester === 1) nextYear++;
-                      
-                      const periods = [];
-                      // Adicionar próximo semestre
-                      periods.push({ year: nextYear, semester: nextSemester });
-                      
-                      // Adicionar 4 semestres para trás (total de 5)
-                      let year = currentYear;
-                      let semester = currentSemester;
-                      for (let i = 0; i < 4; i++) {
-                        periods.push({ year, semester });
-                        if (semester === 1) {
-                          semester = 2;
-                          year--;
-                        } else {
-                          semester = 1;
-                        }
-                      }
-                      
-                      return periods.map(p => (
-                        <option key={`${p.year}/${p.semester}`} value={`${p.year}/${p.semester}`}>
-                          {p.year} - {p.semester}º Semestre
-                        </option>
-                      ));
-                    })()}
-                  </select>
-                </div>
-                
-                <div className="flex-1">
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Identificador</label>
-                  <div className="px-4 py-2 bg-white border border-blue-300 rounded-md">
-                    <p className="text-sm text-gray-700 truncate">
-                      {selectedType === 'Outro' ? (customType || '(vazio)') : selectedType}_{selectedPeriod.replace('/', '_')}
-                    </p>
-                  </div>
-                </div>
-              </div>
-              
-              {selectedType === 'Outro' && (
-                <div className="mt-3">
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Nome Personalizado</label>
-                  <input
-                    type="text"
-                    value={customType}
-                    onChange={(e) => setCustomType(e.target.value)}
-                    placeholder="Digite o nome do tipo"
-                    className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  />
+              {!isMerging && (
+                <div className="flex items-center space-x-1">
+                  <svg className="w-4 h-4 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                  </svg>
+                  <span className="text-gray-600">Clique no + para adicionar nova coluna</span>
                 </div>
               )}
+            </div>
+          </div>
+
+          {/* Seção de Identificador - APENAS para novas planilhas */}
+          {isNewSheet && (
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+              <h3 className="text-lg font-semibold text-gray-700 mb-3">Identificador</h3>
+              <p className="text-sm text-gray-600 mb-3">
+                Dê um nome único para identificar esta planilha no sistema.
+              </p>
+              <input
+                type="text"
+                value={sheetIdentifier}
+                onChange={(e) => setSheetIdentifier(e.target.value)}
+                placeholder={fileName ? fileName.replace(/\.(xlsx?|xlsm)$/i, '') : 'Ex: Ofertas_2024_1, Alunos_Ativos, etc.'}
+                className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 text-base"
+              />
             </div>
           )}
         </div>
 
         <footer className="p-4 bg-gray-50 border-t flex justify-between items-center">
           <div className="text-sm text-gray-600">
-            {customColumns.length > 0 && (
+            {isMerging && missingColumns.length > 0 ? (
+              <span className="font-medium text-orange-600">
+                {missingColumns.filter(col => missingColumnValues[col]).length} de {missingColumns.length} coluna{missingColumns.length > 1 ? 's' : ''} faltante{missingColumns.length > 1 ? 's' : ''} preenchida{missingColumns.length > 1 ? 's' : ''}
+              </span>
+            ) : customColumns.length > 0 ? (
               <span className="font-medium text-indigo-600">
-                {customColumns.length} coluna{customColumns.length > 1 ? 's' : ''} personalizada{customColumns.length > 1 ? 's' : ''} será{customColumns.length > 1 ? 'ão' : ''} adicionada{customColumns.length > 1 ? 's' : ''}
+                {customColumns.length} coluna{customColumns.length > 1 ? 's' : ''} personalizada{customColumns.length > 1 ? 's' : ''} adicionada{customColumns.length > 1 ? 's' : ''}
+              </span>
+            ) : (
+              <span className="text-gray-500">
+                {!isMerging ? 'Clique no + para adicionar colunas personalizadas' : 'Preencha as colunas faltantes na tabela acima'}
               </span>
             )}
           </div>

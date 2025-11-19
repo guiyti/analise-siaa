@@ -52,7 +52,7 @@ export const SheetSelectionModal: React.FC<SheetSelectionModalProps> = ({
         `Para modificar os dados dessa planilha:\n` +
         `1. Acesse a planilha "${existingSheet.type}" no menu principal\n` +
         `2. Use "Opções > Atualizar Esta Planilha" para adicionar/atualizar registros\n` +
-        `3. Ou use "Opções > Limpar Esta Planilha" para remover todos os dados`
+        `3. Ou use "Opções > Excluir Esta Planilha" para remover todos os dados`
       );
       return;
     }

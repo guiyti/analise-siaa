@@ -1,11 +1,9 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
-import type { SheetData, Row, SortConfig, StoredSheet, SheetMetadata, SheetPeriod } from './types';
+import type { SheetData, Row, SortConfig, StoredSheet, SheetMetadata } from './types';
 import DataTable from './components/DataTable';
 import { MainMenu } from './components/MainMenu';
 import { DataPreviewModal } from './components/DataPreviewModal';
-
-// XLSX is loaded from CDN in index.html, so we declare it here to satisfy TypeScript
-declare const XLSX: any;
+import * as XLSX from 'xlsx';
 const STORAGE_SHEETS_KEY = 'spreadsheets';
 const STORAGE_CURRENT_KEY = 'currentSheet';
 
@@ -39,10 +37,6 @@ const deleteSheet = (sheetKey: string) => {
   } catch (error) {
     console.error('Error deleting sheet:', error);
   }
-};
-
-const generateSheetKey = (type: string, period: SheetPeriod): string => {
-  return `${type}_${period.year}_${period.semester}`;
 };
 
 // --- Merge Report Modal Component ---
@@ -124,7 +118,9 @@ const App: React.FC = () => {
   const [isUpdatingCurrentSheet, setIsUpdatingCurrentSheet] = useState(false);
   const [showDataPreview, setShowDataPreview] = useState(false);
   const [previewData, setPreviewData] = useState<SheetData | null>(null);
+  const [currentFileName, setCurrentFileName] = useState<string>('');
   const [isLoadingFile, setIsLoadingFile] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
   const filterTimeoutRef = useRef<NodeJS.Timeout>();
   const isUpdatingRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -155,12 +151,231 @@ const App: React.FC = () => {
     }
   }, [currentSheetKey]);
 
-  // Função para processar arquivo selecionado
-  const handleFileChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  // Função para processar múltiplos arquivos
+  const handleMultipleFiles = useCallback(async (files: File[], isMerging: boolean = false) => {
+    if (files.length === 0) return;
 
+    const processedFiles: Array<{ fileName: string; data: SheetData }> = [];
+    
+    for (const file of files) {
+      try {
+        const data = await new Promise<SheetData>((resolve, reject) => {
+          const reader = new FileReader();
+          
+          reader.onload = (e) => {
+            try {
+              const fileData = e.target?.result;
+              if (!fileData) {
+                reject(new Error("Não foi possível ler o arquivo."));
+                return;
+              }
+              
+              const workbook = XLSX.read(fileData, { type: 'binary' });
+              const sheetName = workbook.SheetNames[0];
+              const worksheet = workbook.Sheets[sheetName];
+              
+              const allData: any[][] = XLSX.utils.sheet_to_json(worksheet, {
+                header: 1,
+                defval: null,
+              });
+              
+              if (allData.length < 2) {
+                reject(new Error(`${file.name}: Planilha vazia ou sem dados suficientes.`));
+                return;
+              }
+
+              // Detectar cabeçalho
+              let headerRowIndex = -1;
+              let potentialHeaders: any[] = [];
+              
+              // Tentar linha 2 (índice 1)
+              if (allData.length > 1 && allData[1]) {
+                const row1 = allData[1];
+                const validCells = row1.filter(cell => 
+                  cell !== null && cell !== undefined && String(cell).trim() !== ''
+                );
+                
+                if (validCells.length >= 3 && validCells.every(cell => typeof cell === 'string')) {
+                  headerRowIndex = 1;
+                  potentialHeaders = row1;
+                }
+              }
+              
+              // Tentar linha 3 (índice 2)
+              if (headerRowIndex === -1 && allData.length > 2 && allData[2]) {
+                const row2 = allData[2];
+                const validCells = row2.filter(cell => 
+                  cell !== null && cell !== undefined && String(cell).trim() !== ''
+                );
+                
+                if (validCells.length >= 3 && validCells.every(cell => typeof cell === 'string')) {
+                  headerRowIndex = 2;
+                  potentialHeaders = row2;
+                }
+              }
+              
+              // Usar primeira linha não vazia
+              if (headerRowIndex === -1) {
+                for (let i = 0; i < Math.min(5, allData.length); i++) {
+                  const row = allData[i];
+                  const validCells = row.filter(cell => 
+                    cell !== null && cell !== undefined && String(cell).trim() !== ''
+                  );
+                  if (validCells.length >= 2) {
+                    headerRowIndex = i;
+                    potentialHeaders = row;
+                    break;
+                  }
+                }
+              }
+              
+              if (headerRowIndex === -1) {
+                reject(new Error(`${file.name}: Não foi possível detectar o cabeçalho.`));
+                return;
+              }
+
+              // Encontrar última coluna válida
+              let lastValidIndex = potentialHeaders.length;
+              for (let i = 0; i < potentialHeaders.length; i++) {
+                const header = potentialHeaders[i];
+                if (header === null || header === undefined || String(header).trim() === '') {
+                  lastValidIndex = i;
+                  break;
+                }
+              }
+              
+              const headers: string[] = potentialHeaders.slice(0, lastValidIndex).map(String);
+              
+              if (headers.length === 0) {
+                reject(new Error(`${file.name}: Nenhuma coluna válida encontrada.`));
+                return;
+              }
+              
+              const dataRows = allData.slice(headerRowIndex + 1);
+              const rows: Row[] = dataRows.map(rowData => {
+                const rowObject: Row = {};
+                headers.forEach((header, index) => {
+                  rowObject[header] = rowData[index];
+                });
+                return rowObject;
+              }).filter(row => {
+                return Object.values(row).some(val => val !== null && val !== undefined);
+              });
+
+              resolve({ headers, rows });
+            } catch (error) {
+              reject(error);
+            }
+          };
+
+          reader.onerror = () => {
+            reject(new Error(`${file.name}: Erro ao ler o arquivo.`));
+          };
+
+          reader.readAsBinaryString(file);
+        });
+
+        processedFiles.push({ fileName: file.name, data });
+      } catch (error) {
+        console.error(error);
+        alert(error instanceof Error ? error.message : `Erro ao processar ${file.name}`);
+      }
+    }
+
+    if (processedFiles.length === 0) {
+      setIsLoadingFile(false);
+      return;
+    }
+
+    // Se está mesclando, combinar todos os dados
+    if (isMerging && currentSheet) {
+      const baseHeaders = currentSheet.data.headers;
+      const allNewRows: Row[] = [];
+      const updatedRows: string[] = [];
+      const newRows: string[] = [];
+      
+      // Combinar dados de todos os arquivos
+      processedFiles.forEach(({ data }) => {
+        allNewRows.push(...data.rows);
+      });
+
+      // Mesclar com dados existentes
+      const mergedRows = [...currentSheet.data.rows];
+      
+      allNewRows.forEach(newRow => {
+        // Criar hash da linha para comparação
+        const newRowHash = baseHeaders.map(h => String(newRow[h] || '')).join('|');
+        
+        const existingIndex = mergedRows.findIndex(existingRow => {
+          const existingHash = baseHeaders.map(h => String(existingRow[h] || '')).join('|');
+          return existingHash === newRowHash;
+        });
+
+        if (existingIndex !== -1) {
+          // Atualizar linha existente
+          mergedRows[existingIndex] = { ...mergedRows[existingIndex], ...newRow };
+          updatedRows.push(newRowHash);
+        } else {
+          // Adicionar nova linha
+          mergedRows.push(newRow);
+          newRows.push(newRowHash);
+        }
+      });
+
+      const updatedSheet: StoredSheet = {
+        ...currentSheet,
+        data: {
+          ...currentSheet.data,
+          rows: mergedRows,
+        },
+        metadata: {
+          ...currentSheet.metadata,
+          updatedAt: new Date().toISOString(),
+        },
+      };
+
+      saveSheet(updatedSheet);
+      setAllSheets(prev => ({ ...prev, [currentSheetKey!]: updatedSheet }));
+      setMergeReport({ updated: updatedRows, new: newRows });
+      setIsLoadingFile(false);
+    } else {
+      // Mostrar pré-visualização para nova planilha (primeiro arquivo)
+      const firstFile = processedFiles[0];
+      setPreviewData(firstFile.data);
+      setCurrentFileName(firstFile.fileName);
+      setShowDataPreview(true);
+      setIsLoadingFile(false);
+    }
+  }, [currentSheet, currentSheetKey]);
+
+  // Função para processar arquivo selecionado
+    const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    const fileArray = Array.from(files) as File[];
+    const excelFiles = fileArray.filter(file => file.name.match(/\.(xls|xlsx|xlsm)$/i));
+    
+    if (excelFiles.length === 0) {
+      alert("Por favor, selecione um arquivo Excel válido (.xls, .xlsx ou .xlsm)");
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+      return;
+    }
+    
+    // Se há uma planilha atual e múltiplos arquivos, fazer merge
+    if (currentSheetKey && currentSheet && excelFiles.length > 0) {
+      setIsLoadingFile(true);
+      handleMultipleFiles(excelFiles, true);
+      return;
+    }
+
+    // Caso contrário, processar apenas o primeiro arquivo (modo single-file legacy)
+    const file = excelFiles[0];
     setIsLoadingFile(true);
+    setCurrentFileName(file.name);
+    
     const reader = new FileReader();
 
     reader.onload = (e) => {
@@ -173,7 +388,6 @@ const App: React.FC = () => {
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
         
-        // Ler todas as linhas sem pular nenhuma inicialmente
         const allData: any[][] = XLSX.utils.sheet_to_json(worksheet, {
           header: 1,
           defval: null,
@@ -183,11 +397,9 @@ const App: React.FC = () => {
             throw new Error("A planilha está vazia ou não contém dados suficientes.");
         }
 
-        // Detectar automaticamente a linha do cabeçalho (linha 2 ou 3)
         let headerRowIndex = -1;
         let potentialHeaders: any[] = [];
         
-        // Tentar linha 2 (índice 1) - formato .xls
         if (allData.length > 1 && allData[1]) {
           const row1 = allData[1];
           const validCells = row1.filter(cell => 
@@ -200,7 +412,6 @@ const App: React.FC = () => {
           }
         }
         
-        // Se não encontrou na linha 2, tentar linha 3 (índice 2) - formato .xlsx/.xlsm
         if (headerRowIndex === -1 && allData.length > 2 && allData[2]) {
           const row2 = allData[2];
           const validCells = row2.filter(cell => 
@@ -213,7 +424,6 @@ const App: React.FC = () => {
           }
         }
         
-        // Se ainda não encontrou, usar a primeira linha não vazia
         if (headerRowIndex === -1) {
           for (let i = 0; i < Math.min(5, allData.length); i++) {
             const row = allData[i];
@@ -232,7 +442,6 @@ const App: React.FC = () => {
           throw new Error("Não foi possível detectar o cabeçalho da planilha.");
         }
 
-        // Encontrar índice da primeira coluna com header null/vazio
         let lastValidIndex = potentialHeaders.length;
         
         for (let i = 0; i < potentialHeaders.length; i++) {
@@ -243,14 +452,12 @@ const App: React.FC = () => {
           }
         }
         
-        // Coletar apenas colunas válidas (até o primeiro header null)
         const headers: string[] = potentialHeaders.slice(0, lastValidIndex).map(String);
         
         if (headers.length === 0) {
           throw new Error("Nenhuma coluna válida encontrada.");
         }
         
-        // Pegar todas as linhas após o cabeçalho
         const dataRows = allData.slice(headerRowIndex + 1);
         
         const rows: Row[] = dataRows.map(rowData => {
@@ -260,16 +467,13 @@ const App: React.FC = () => {
           });
           return rowObject;
         }).filter(row => {
-          // Filtrar linhas completamente vazias
           return Object.values(row).some(val => val !== null && val !== undefined);
         });
 
-        // Mostrar pré-visualização
         setPreviewData({ headers, rows });
         setShowDataPreview(true);
         setIsLoadingFile(false);
         
-        // Limpar input para permitir selecionar o mesmo arquivo novamente
         if (fileInputRef.current) {
           fileInputRef.current.value = '';
         }
@@ -292,19 +496,70 @@ const App: React.FC = () => {
     };
 
     reader.readAsBinaryString(file);
+  }, [currentSheetKey, currentSheet, handleMultipleFiles]);
+
+  // Handlers para drag & drop
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
   }, []);
 
-  const handleConfirmPreview = useCallback((modifiedData: SheetData, sheetType?: string, sheetPeriod?: SheetPeriod) => {
-    // Se tem tipo e período, é uma nova planilha
-    if (sheetType && sheetPeriod) {
-      const key = generateSheetKey(sheetType, sheetPeriod);
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.currentTarget === e.target) {
+      setIsDragging(false);
+    }
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const files = Array.from(e.dataTransfer.files) as File[];
+    if (files.length === 0) return;
+
+    // Filtrar apenas arquivos Excel válidos
+    const excelFiles = files.filter(file => file.name.match(/\.(xls|xlsx|xlsm)$/i));
+    
+    if (excelFiles.length === 0) {
+      alert('Por favor, selecione arquivo(s) Excel válido(s) (.xls, .xlsx, .xlsm)');
+      return;
+    }
+
+    setIsLoadingFile(true);
+
+    // Se está atualizando planilha atual, processar mesclagem
+    if (currentSheetKey && currentSheet) {
+      // Processar múltiplos arquivos para mesclagem
+      handleMultipleFiles(excelFiles, true);
+    } else {
+      // Nova planilha - processar apenas o primeiro arquivo
+      const file = excelFiles[0];
+      const event = {
+        target: { files: [file] }
+      } as any;
+      handleFileChange(event);
+    }
+  }, [currentSheetKey, currentSheet, handleFileChange, handleMultipleFiles]);
+
+  const handleConfirmPreview = useCallback((modifiedData: SheetData, sheetIdentifier?: string) => {
+    // Se tem identificador, é uma nova planilha
+    if (sheetIdentifier) {
+      const key = sheetIdentifier;
       const now = new Date().toISOString();
 
       const newSheet: StoredSheet = {
         metadata: {
-          type: sheetType,
-          period: sheetPeriod,
           key,
+          name: sheetIdentifier,
           createdAt: now,
           updatedAt: now,
         },
@@ -318,6 +573,7 @@ const App: React.FC = () => {
       setShowMainMenu(false);
       setShowDataPreview(false);
       setPreviewData(null);
+      setCurrentFileName('');
       setFilters({});
       setDebouncedFilters({});
       setSortConfig(null);
@@ -326,12 +582,14 @@ const App: React.FC = () => {
       setPendingFileData(modifiedData);
       setShowDataPreview(false);
       setPreviewData(null);
+      setCurrentFileName('');
     }
   }, []);
 
   const handleCancelPreview = useCallback(() => {
     setShowDataPreview(false);
     setPreviewData(null);
+    setCurrentFileName('');
     if (currentSheetKey) {
       setShowMainMenu(false);
     } else {
@@ -366,22 +624,31 @@ const App: React.FC = () => {
         return;
       }
 
-      // Merge logic
-      const idKey = existingHeaders[0];
+      // Merge logic - usando hash da linha toda ao invés de apenas primeira coluna
+      const createRowHash = (row: Row, headers: string[]): string => {
+        // Criar hash simples baseado em todos os valores da linha
+        const values = headers.map(h => {
+          const val = row[h];
+          return val === null || val === undefined ? '' : String(val);
+        });
+        return values.join('|');
+      };
+
       const updatedIds: string[] = [];
       const newIds: string[] = [];
-      const existingRowsMap = new Map(existingSheet.data.rows.map(row => [row[idKey], row]));
+      const existingRowsMap = new Map(
+        existingSheet.data.rows.map(row => [createRowHash(row, existingHeaders), row])
+      );
 
       pendingFileData.rows.forEach(newRow => {
-        const newRowId = newRow[idKey];
-        if (newRowId === null || newRowId === undefined) return;
-
-        if (existingRowsMap.has(newRowId)) {
-          updatedIds.push(String(newRowId));
+        const newRowHash = createRowHash(newRow, existingHeaders);
+        
+        if (existingRowsMap.has(newRowHash)) {
+          updatedIds.push(newRowHash.substring(0, 50)); // Mostrar parte do hash no relatório
         } else {
-          newIds.push(String(newRowId));
+          newIds.push(newRowHash.substring(0, 50));
         }
-        existingRowsMap.set(newRowId, newRow);
+        existingRowsMap.set(newRowHash, newRow);
       });
 
       const mergedRows = Array.from(existingRowsMap.values());
@@ -463,7 +730,7 @@ const App: React.FC = () => {
   const handleClearCurrentSheet = useCallback(() => {
     if (!currentSheetKey) return;
     
-    if (confirm(`Tem certeza que deseja limpar a planilha "${allSheets[currentSheetKey]?.metadata.type}"?`)) {
+    if (confirm(`Tem certeza que deseja limpar a planilha "${allSheets[currentSheetKey]?.metadata.name}"?`)) {
       deleteSheet(currentSheetKey);
       setAllSheets(prev => {
         const newSheets = { ...prev };
@@ -557,7 +824,26 @@ const App: React.FC = () => {
   const existingSheetsList: SheetMetadata[] = Object.values(allSheets).map((s: StoredSheet) => s.metadata);
 
   return (
-    <>
+    <div
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+      className="relative min-h-screen"
+    >
+      {/* Overlay de drag & drop */}
+      {isDragging && (
+        <div className="fixed inset-0 bg-indigo-600 bg-opacity-90 z-50 flex items-center justify-center pointer-events-none">
+          <div className="text-center">
+            <svg className="w-24 h-24 mx-auto text-white mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+            </svg>
+            <p className="text-white text-2xl font-bold">Solte o arquivo aqui</p>
+            <p className="text-indigo-200 mt-2">Arquivos suportados: .xls, .xlsx, .xlsm</p>
+          </div>
+        </div>
+      )}
+
       {mergeReport && (
         <MergeReportModal 
             report={mergeReport} 
@@ -572,7 +858,8 @@ const App: React.FC = () => {
           onCancel={handleCancelPreview}
           existingHeaders={currentSheet?.data.headers}
           isNewSheet={!currentSheetKey && !isUpdatingCurrentSheet}
-          existingSheets={existingSheetsList}
+          existingIdentifiers={existingSheetsList.map(s => s.key)}
+          fileName={currentFileName}
         />
       )}
       
@@ -584,6 +871,7 @@ const App: React.FC = () => {
         onChange={handleFileChange}
         className="hidden"
         disabled={isLoadingFile}
+        multiple
       />
       
       {showMainMenu ? (
@@ -610,7 +898,7 @@ const App: React.FC = () => {
           onSwitchSheet={handleSelectSheetFromMenu}
         />
       ) : null}
-    </>
+    </div>
   );
 };
 

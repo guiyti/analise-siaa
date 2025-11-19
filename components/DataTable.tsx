@@ -43,6 +43,10 @@ const DataTable: React.FC<DataTableProps> = ({
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isColumnVisibilityOpen, setIsColumnVisibilityOpen] = useState(false);
   const [isSheetsListOpen, setIsSheetsListOpen] = useState(false);
+  const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
+  const [resizingColumn, setResizingColumn] = useState<string | null>(null);
+  const [resizeStartX, setResizeStartX] = useState(0);
+  const [resizeStartWidth, setResizeStartWidth] = useState(0);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   
@@ -84,6 +88,37 @@ const DataTable: React.FC<DataTableProps> = ({
       setScrollTop(newScrollTop);
     });
   }, []);
+
+  // Handlers para redimensionamento de colunas
+  const handleResizeStart = (e: React.MouseEvent, column: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setResizingColumn(column);
+    setResizeStartX(e.clientX);
+    setResizeStartWidth(columnWidths[column] || 200);
+  };
+
+  useEffect(() => {
+    if (!resizingColumn) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = e.clientX - resizeStartX;
+      const newWidth = Math.max(80, resizeStartWidth + diff);
+      setColumnWidths(prev => ({ ...prev, [resizingColumn]: newWidth }));
+    };
+
+    const handleMouseUp = () => {
+      setResizingColumn(null);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [resizingColumn, resizeStartX, resizeStartWidth]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -138,7 +173,7 @@ const DataTable: React.FC<DataTableProps> = ({
   
   const currentSheet = availableSheets.find(s => s.key === currentSheetKey);
   const headerTitle = currentSheet 
-    ? `${currentSheet.type} - ${currentSheet.period.year}/${currentSheet.period.semester}`
+    ? currentSheet.name
     : 'Visualizador de Planilha';
   
   return (
@@ -227,10 +262,10 @@ const DataTable: React.FC<DataTableProps> = ({
                               sheet.key === currentSheetKey ? 'bg-indigo-50 border-l-4 border-indigo-600' : ''
                             }`}
                           >
-                            <div className="font-semibold text-sm text-gray-800">{sheet.type}</div>
-                            <div className="text-xs text-gray-600">
-                              {sheet.period.year}/{sheet.period.semester}
-                            </div>
+                          <div className="font-semibold text-sm text-gray-800">{sheet.name}</div>
+                          <div className="text-xs text-gray-500">
+                            Atualizado: {new Date(sheet.updatedAt).toLocaleDateString('pt-BR')}
+                          </div>
                           </button>
                         ))}
                       </div>
@@ -260,7 +295,7 @@ const DataTable: React.FC<DataTableProps> = ({
                   className="w-full px-4 py-2 text-left hover:bg-gray-100 flex items-center space-x-2 text-red-600"
                 >
                   <TrashIcon />
-                  <span>Limpar Esta Planilha</span>
+                  <span>Excluir Esta Planilha</span>
                 </button>
               </div>
             </div>
@@ -279,12 +314,23 @@ const DataTable: React.FC<DataTableProps> = ({
               {visibleHeaders.map((header) => (
                 <th
                   key={header}
-                  onClick={() => onSort(header)}
+                  onClick={(e) => {
+                    // Não ordenar se estiver clicando no resize handle
+                    const target = e.target as HTMLElement;
+                    if (!target.closest('.resize-handle')) {
+                      onSort(header);
+                    }
+                  }}
+                  style={{ 
+                    width: columnWidths[header] || 200, 
+                    minWidth: 80, 
+                    maxWidth: columnWidths[header] || 200
+                  }}
                   className="sticky top-0 px-4 h-12 text-left font-semibold text-gray-600 bg-gray-200 z-20 cursor-pointer select-none whitespace-nowrap border-b border-gray-300"
                 >
-                  <div className="flex items-center space-x-2">
-                    <span>{header}</span>
-                    <span className="text-gray-400">
+                  <div className="flex items-center space-x-2 overflow-hidden relative h-full">
+                    <span className="truncate">{header}</span>
+                    <span className="text-gray-400 flex-shrink-0">
                       {sortConfig?.key === header ? (
                         sortConfig.direction === 'ascending' ? (
                           <AscIcon />
@@ -295,6 +341,13 @@ const DataTable: React.FC<DataTableProps> = ({
                         <SortIcon />
                       )}
                     </span>
+                    {/* Handle de redimensionamento - 16px de largura para facilitar clique */}
+                    <div
+                      onMouseDown={(e) => handleResizeStart(e, header)}
+                      className="resize-handle absolute top-0 right-0 w-4 h-full cursor-col-resize hover:bg-indigo-400 bg-transparent z-40"
+                      style={{ userSelect: 'none' }}
+                      title="Arrastar para redimensionar"
+                    />
                   </div>
                 </th>
               ))}
@@ -303,7 +356,14 @@ const DataTable: React.FC<DataTableProps> = ({
               {visibleHeaders.map((header) => (
                 <th
                   key={`${header}-filter`}
-                  className="sticky top-12 p-2 z-20 bg-gray-200 border-b border-gray-300"
+                  className="sticky p-2 bg-gray-200 border-b border-gray-300"
+                  style={{ 
+                    width: columnWidths[header] || 200, 
+                    minWidth: 80,
+                    maxWidth: columnWidths[header] || 200,
+                    top: '48px',
+                    zIndex: 20
+                  }}
                 >
                   <input
                     type="text"
@@ -327,7 +387,16 @@ const DataTable: React.FC<DataTableProps> = ({
               return (
                 <tr key={rowIndex} className="hover:bg-gray-50" style={{ height: `${ROW_HEIGHT}px` }}>
                   {visibleHeaders.map((header) => (
-                    <td key={header} className="px-4 py-2 border-b border-gray-200 whitespace-nowrap overflow-hidden text-ellipsis">
+                    <td 
+                      key={header} 
+                      style={{ 
+                        width: columnWidths[header] || 200, 
+                        minWidth: 80,
+                        maxWidth: columnWidths[header] || 200
+                      }}
+                      className="px-4 py-2 border-b border-gray-200 whitespace-nowrap overflow-hidden text-ellipsis"
+                      title={String(row[header] ?? '')}
+                    >
                       {String(row[header] ?? '')}
                     </td>
                   ))}
